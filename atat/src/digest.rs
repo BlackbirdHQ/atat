@@ -26,6 +26,7 @@ impl From<nom::Err<nom::error::Error<&[u8]>>> for ParseError {
 }
 
 pub trait Digester {
+    /// Digest the input buffer and return the result and the number of bytes consumed.
     fn digest<'a>(&mut self, buf: &'a [u8]) -> (DigestResult<'a>, usize);
 }
 
@@ -128,7 +129,7 @@ impl<P: Parser> Digester for AtDigester<P> {
 
         // 2. Match for URC's
         match P::parse(buf) {
-            Ok((urc, len)) => return (DigestResult::Urc(urc), len),
+            Ok((urc, len)) => return (DigestResult::Urc(urc), len + space_and_echo_bytes),
             Err(ParseError::Incomplete) => return incomplete,
             _ => {}
         }
@@ -183,6 +184,14 @@ impl<P: Parser> Digester for AtDigester<P> {
         // Generic error matches
         if let Ok((_, (result, len))) = parser::error_response(buf) {
             return (result, len + space_and_echo_bytes);
+        }
+
+        // Handle '\r\n <Garbage> \r\n <Valid URC> \r\n' as parser::echo will only consume garbage BEFORE a \r\n
+        if buf.starts_with(b"\r\n") && buf.len() > 4 {
+            let (res, consumed) = self.digest(&buf[2..]);
+            if res != DigestResult::None {
+                return (res, space_and_echo_bytes + 2 + consumed);
+            }
         }
 
         // No matches at all.
@@ -822,6 +831,36 @@ mod test {
             (res, bytes),
             (DigestResult::Response(Ok(b"+USORD: 0,4,\"90030002\"")), 43)
         );
+        buf.rotate_left(bytes);
+        buf.truncate(buf.len() - bytes);
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn urc_prefixed_with_garbage() {
+        let mut digester = AtDigester::<UrcTestParser>::new();
+        let mut buf = heapless::Vec::<u8, TEST_RX_BUF_LEN>::new();
+
+        buf.extend_from_slice(b"aaaa\r\n+UUSORD: 0,5\r\n").unwrap();
+        let (res, bytes) = digester.digest(&buf);
+
+        assert_eq!((res, bytes), (DigestResult::Urc(b"+UUSORD: 0,5"), 20));
+        buf.rotate_left(bytes);
+        buf.truncate(buf.len() - bytes);
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn urc_prefixed_with_garbage_including_newline() {
+        let mut digester = AtDigester::<UrcTestParser>::new();
+        let mut buf = heapless::Vec::<u8, TEST_RX_BUF_LEN>::new();
+
+        buf.extend_from_slice(
+            b"a\r\na\r\n+UUSORD: 0,5\r\n", // 20 bytes
+        )
+        .unwrap();
+        let (res, bytes) = digester.digest(&buf);
+        assert_eq!((res, bytes), (DigestResult::Urc(b"+UUSORD: 0,5"), 20));
         buf.rotate_left(bytes);
         buf.truncate(buf.len() - bytes);
         assert!(buf.is_empty());
