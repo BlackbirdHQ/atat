@@ -26,24 +26,27 @@ impl<'a, RW: Read + Write + ReadReady + WriteReady, D: Digester> SimpleClient<'a
 
     /// Returns a mutable reference to the inner reader/writer.
     pub fn inner(&mut self) -> &mut RW {
+        self.wait_cooldown_timer();
         &mut self.rw
     }
 
     fn send_request(&mut self, len: usize) -> Result<(), Error> {
-        if len < 50 {
-            debug!("Sending command: {:?}", LossyStr(&self.buf[..len]));
-        } else {
-            debug!("Sending command with long payload ({} bytes)", len);
-        }
+        if len > 0 {
+            if len < 50 {
+                debug!("Sending command: {:?}", LossyStr(&self.buf[..len]));
+            } else {
+                debug!("Sending command with long payload ({} bytes)", len);
+            }
 
-        self.wait_cooldown_timer();
+            self.wait_cooldown_timer();
 
-        // Write request
-        let until = Instant::now() + self.config.tx_timeout;
-        let mut pos = 0;
-        while pos < len {
-            wait_for_write(&mut self.rw, until)?;
-            pos += self.rw.write(&self.buf[pos..len]).or(Err(Error::Write))?;
+            // Write request
+            let until = Instant::now() + self.config.tx_timeout;
+            let mut pos = 0;
+            while pos < len {
+                wait_for_write(&mut self.rw, until)?;
+                pos += self.rw.write(&self.buf[pos..len]).or(Err(Error::Write))?;
+            }
         }
 
         let until = Instant::now() + self.config.flush_timeout;

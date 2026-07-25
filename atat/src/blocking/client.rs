@@ -45,25 +45,29 @@ where
 
     /// Returns a mutable reference to the inner writer.
     pub fn inner(&mut self) -> &mut W {
+        self.res_slot.reset();
+        self.wait_cooldown_timer();
         &mut self.writer
     }
 
     fn send_request(&mut self, len: usize) -> Result<(), Error> {
-        if len < 50 {
-            debug!("Sending command: {:?}", LossyStr(&self.buf[..len]));
-        } else {
-            debug!("Sending command with long payload ({} bytes)", len,);
+        if len > 0 {
+            if len < 50 {
+                debug!("Sending command: {:?}", LossyStr(&self.buf[..len]));
+            } else {
+                debug!("Sending command with long payload ({} bytes)", len);
+            }
+            self.wait_cooldown_timer();
+
+            // Clear any pending response signal
+            self.res_slot.reset();
+
+            // Write request
+            self.writer
+                .write_all(&self.buf[..len])
+                .map_err(|_| Error::Write)?;
         }
 
-        self.wait_cooldown_timer();
-
-        // Clear any pending response signal
-        self.res_slot.reset();
-
-        // Write request
-        self.writer
-            .write_all(&self.buf[..len])
-            .map_err(|_| Error::Write)?;
         self.writer.flush().map_err(|_| Error::Write)?;
 
         self.start_cooldown_timer();

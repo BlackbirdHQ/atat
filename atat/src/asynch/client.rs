@@ -37,7 +37,9 @@ impl<'a, W: Write, const INGRESS_BUF_SIZE: usize> Client<'a, W, INGRESS_BUF_SIZE
     }
 
     /// Returns a mutable reference to the inner writer.
-    pub fn inner(&mut self) -> &mut W {
+    pub async fn inner(&mut self) -> &mut W {
+        self.res_slot.reset();
+        self.wait_cooldown_timer().await;
         &mut self.writer
     }
 }
@@ -48,25 +50,27 @@ impl<W: Write, const INGRESS_BUF_SIZE: usize> ErrorType for Client<'_, W, INGRES
 
 impl<'a, W: Write, const INGRESS_BUF_SIZE: usize> Client<'a, W, INGRESS_BUF_SIZE> {
     async fn send_request(&mut self, len: usize) -> Result<(), Error> {
-        if len < 50 {
-            debug!("Sending command: {:?}", LossyStr(&self.buf[..len]));
-        } else {
-            debug!("Sending command with long payload ({} bytes)", len);
+        if len > 0 {
+            if len < 50 {
+                debug!("Sending command: {:?}", LossyStr(&self.buf[..len]));
+            } else {
+                debug!("Sending command with long payload ({} bytes)", len);
+            }
+
+            self.wait_cooldown_timer().await;
+
+            // Clear any pending response signal
+            self.res_slot.reset();
+
+            // Write request
+            with_timeout(
+                self.config.tx_timeout,
+                self.writer.write_all(&self.buf[..len]),
+            )
+            .await
+            .map_err(|_| Error::Timeout)?
+            .map_err(|_| Error::Write)?;
         }
-
-        self.wait_cooldown_timer().await;
-
-        // Clear any pending response signal
-        self.res_slot.reset();
-
-        // Write request
-        with_timeout(
-            self.config.tx_timeout,
-            self.writer.write_all(&self.buf[..len]),
-        )
-        .await
-        .map_err(|_| Error::Timeout)?
-        .map_err(|_| Error::Write)?;
 
         with_timeout(self.config.flush_timeout, self.writer.flush())
             .await
